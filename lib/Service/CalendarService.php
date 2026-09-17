@@ -9,10 +9,8 @@ use DateTimeImmutable;
 use DateTimeInterface;
 use DateTimeZone;
 use OCA\DAV\CalDAV\CalDavBackend;
-use OCA\ShiftsNext\Db\CalendarChange;
-use OCA\ShiftsNext\Db\CalendarChangeMapper;
-use OCA\ShiftsNext\Exception\CalendarNotFoundException;
-use OCA\ShiftsNext\Exception\ShiftNotFoundException;
+use OCA\ShiftsNext\Db\Shift;
+use OCA\ShiftsNext\Enum\SyncShiftOperation;
 use OCA\ShiftsNext\Extended\ShiftExtended;
 use OCA\ShiftsNext\Psalm\CalendarAlias;
 use OCA\ShiftsNext\Util\Util;
@@ -21,16 +19,16 @@ use Sabre\VObject\Component\VCalendar;
 use Sabre\VObject\Component\VEvent;
 use Sabre\VObject\Reader;
 use Throwable;
-
+use function array_any;
 use function array_column;
 use function array_filter;
 use function array_map;
 use function array_merge;
 use function array_push;
 use function array_unique;
+use function array_values;
 use function explode;
 use function in_array;
-use function is_string;
 use function mb_ereg_replace;
 use function mb_split;
 use function mb_strtolower;
@@ -47,20 +45,21 @@ use function trim;
  * @psalm-import-type SearchResultObject from CalendarAlias
  * @psalm-import-type SearchResult from CalendarAlias
  */
-final class CalendarService {
+final class CalendarService extends AbstractService {
 	/** DON'T EVER CHANGE THIS VALUE */
 	private const string NAMESPACE_UUID = 'd3a8945c-b6ce-4d49-915f-9f7be87c866b';
 
 	public function __construct(
 		private CalDavBackend $calDavBackend,
 		private ConfigService $configService,
-		private ShiftService $shiftService,
-		private CalendarChangeMapper $calendarChangeMapper,
 		private UserService $userService,
+		private ?string $userId,
 	) {
 	}
 
 	/**
+	 * Returns all calendars
+	 *
 	 * @return list<SanitizedCalendar>
 	 */
 	public function getCalendars(): array {
@@ -79,88 +78,71 @@ final class CalendarService {
 	}
 
 	/**
-	 * Sequentially applies `$calendarChanges` and deletes them afterwards if
-	 * applying was successful
+	 * Returns all calendars for which `$userId` has write permissions
 	 *
-	 * None-critical exceptions are catched and hints about the culprit are
-	 * included in a string array returned from this method
+	 * @param null|string $userId If `null`, the logged-in user is used
 	 *
-	 * @param CalendarChange[] $calendarChanges
-	 *
-	 * @return list<string> Error messages
-	 *
-	 * @throws CalendarNotFoundException
-	 *                                   {@see OCA\ShiftsNext\Service\ConfigService::getCommonCalendarId()}
+	 * @return list<SanitizedCalendar> Empty if there is no logged-in user
 	 */
-	public function applyChanges(array $calendarChanges): array {
-		$errors = [];
-
-		foreach ($calendarChanges as $change) {
-			$calendars = $this->applyChange($change);
-
-			foreach ($calendars as $calendar) {
-				$errors[]
-					= 'Failed to apply change to calendar '
-					. "'{$calendar['displayName']}' of user "
-					. "'{$calendar['ownerDisplayName']}'";
-			}
-
-			if ($calendars) {
-				continue;
-			}
-
-			$changeId = $change->getId();
-			try {
-				$this->calendarChangeMapper->deleteById($changeId);
-			} catch (Throwable) {
-				$errors[] = "Failed to delete calendar change `$changeId`";
-			}
+	public function getWritableCalendars(?string $userId = null): array {
+		$effectiveUserId = $userId ?? $this->userId;
+		if ($effectiveUserId === null) {
+			return [];
 		}
-
-		return $errors;
+		/** @var list<Calendar> */
+		$calendars = $this->calDavBackend->getCalendarsForUser(
+			'principals/users/' . $effectiveUserId
+		);
+		$calendars = array_filter(
+			$calendars,
+			fn ($calendar) => !($calendar['{http://owncloud.org/ns}read-only'] ?? false),
+		);
+		return array_map(self::sanitizeCalendar(...), array_values($calendars));
 	}
 
 	/**
-	 * Either creates, updates or deletes an event based on `$calendarChange`
+	 * Checks if `$userId` has write access for `$calendarId`
 	 *
-	 * @param CalendarChange $calendarChange
+	 * @param int $calendarId The calendar to check
+	 * @param null|string $userId If `null`, the logged-in user is used
 	 *
-	 * @return list<SanitizedCalendar> Calendars where applying the change failed
-	 *
-	 * @throws CalendarNotFoundException
-	 *                                   {@see OCA\ShiftsNext\Service\ConfigService::getCommonCalendarId()}
+	 * @return bool
 	 */
-	public function applyChange(CalendarChange $calendarChange): array {
-		$userId = $calendarChange->getUserId();
-		$shiftId = $calendarChange->getShiftId();
+	public function hasUserWriteAccessForCalendar(
+		int $calendarId,
+		?string $userId = null,
+	): bool {
+		return array_any(
+			$this->getWritableCalendars($userId ?? $this->userId),
+			fn ($calendar) => $calendar['id'] === $calendarId,
+		);
+	}
 
-		try {
-			$shift = $this->shiftService->getExtended($shiftId);
-		} catch (ShiftNotFoundException) {
-			// Failing to get the shift, because it does not exist, is expected
-			$shift = null;
+	/**
+	 * Syncs `$shift` with the calendar app
+	 *
+	 * @param ShiftExtended $shift The shift to sync
+	 * @param SyncShiftOperation $operation The sync operation
+	 *
+	 * @return void
+	 */
+	public function syncShift(ShiftExtended $shift, SyncShiftOperation $operation): void {
+		if (!$shift->shiftType->syncToCalendar) {
+			return;
 		}
-
 		['normal' => $objectUri, 'deleted' => $objectUriDeleted]
-			= self::getCalendarObjectUri($shiftId);
-
+			= self::getCalendarObjectUri($shift->id);
 		$calendars = [];
-
-		try {
-			$calendars[] = $this->getCommonCalendar();
-		} catch (CalendarNotFoundException) {
-			// Failing to get the common calendar is fine
+		if ($shift->shiftType->calendar !== null) {
+			$calendars[] = $shift->shiftType->calendar;
+		} elseif ($commonCalendar = $this->getCommonCalendar()) {
+			$calendars[] = $commonCalendar;
 		}
-
 		if ($this->configService->getSyncToPersonalCalendar()) {
-			try {
-				$calendars[] = $this->getPersonalCalendar($userId);
-			} catch (CalendarNotFoundException) {
-				// Failing to get the personal calendar is fine
+			if ($personalCalendar = $this->getPersonalCalendar($shift->user->getUID())) {
+				$calendars[] = $personalCalendar;
 			}
 		}
-
-		$failedCalendars = [];
 		foreach ($calendars as $calendar) {
 			/** @var null|CalendarObject */
 			$deletedObject = $this->calDavBackend->getCalendarObject(
@@ -170,34 +152,23 @@ final class CalendarService {
 			if ($deletedObject !== null) {
 				$this->calDavBackend->restoreCalendarObject($deletedObject);
 			}
-
 			/** @var null|CalendarObject */
 			$calendarObject = $this->calDavBackend->getCalendarObject(
 				$calendar['id'],
 				$objectUri,
 			);
-
 			$calendarObjectExists = $calendarObject !== null;
-
 			try {
-				if ($shift && $shift->user->getUID() === $userId) {
-					$isPersonal
-						= $calendar['uri']
-							=== CalDavBackend::PERSONAL_CALENDAR_URI;
-					$stream = $this->createICalendarStream($shift, $isPersonal);
-
+				if ($operation === SyncShiftOperation::CreateOrUpdate) {
+					$stream = $this->createICalendarStream(
+						$shift,
+						$calendar['uri'] === CalDavBackend::PERSONAL_CALENDAR_URI,
+					);
+					$args = [$calendar['id'], $objectUri, $stream];
 					if ($calendarObjectExists) {
-						$this->calDavBackend->updateCalendarObject(
-							$calendar['id'],
-							$objectUri,
-							$stream,
-						);
+						$this->calDavBackend->updateCalendarObject(...$args);
 					} else {
-						$this->calDavBackend->createCalendarObject(
-							$calendar['id'],
-							$objectUri,
-							$stream,
-						);
+						$this->calDavBackend->createCalendarObject(...$args);
 					}
 				} elseif ($calendarObjectExists) {
 					$this->calDavBackend->deleteCalendarObject(
@@ -207,13 +178,22 @@ final class CalendarService {
 					);
 				}
 			} catch (Throwable) {
-				$failedCalendars[] = $calendar;
+				// Ignore
 			}
 		}
-
-		return $failedCalendars;
 	}
 
+	/**
+	 * Creates an iCal stream (string) for the specified shift
+	 *
+	 * @param ShiftExtended $shift The shift to create the iCal stream for
+	 * @param bool $isPersonal Whether the stream is meant to be used for the
+	 *                         user's personal calendar or the common calendar.
+	 *                         If `false`, the user's display name is included
+	 *                         in the iCal event's SUMMARY field.
+	 *
+	 * @return string
+	 */
 	private function createICalendarStream(
 		ShiftExtended $shift,
 		bool $isPersonal,
@@ -276,102 +256,82 @@ final class CalendarService {
 	}
 
 	/**
-	 * @return SanitizedCalendar
+	 * Returns the "common" calendar set in the admin settings by the Nextcloud
+	 * instance admin
 	 *
-	 * @throws CalendarNotFoundException
-	 */
-	public function getCommonCalendar(): array {
-		$id = $this->configService->getCommonCalendarId();
-		return $this->getCalendarById($id);
-	}
-
-	/**
 	 * @return null|SanitizedCalendar `null` if not found
 	 */
-	public function safeGetCommonCalendar(): ?array {
-		$id = $this->configService->getCommonCalendarId();
-		return $this->safeGetCalendarById($id);
+	public function getCommonCalendar(): ?array {
+		return $this->getCalendarById($this->configService->getCommonCalendarId());
 	}
 
 	/**
-	 * @return SanitizedCalendar
+	 * Returns the "absence" calendar set in the admin settings by the Nextcloud
+	 * instance admin
 	 *
-	 * @throws CalendarNotFoundException
-	 */
-	public function getAbsenceCalendar(): array {
-		$id = $this->configService->getAbsenceCalendarId();
-		return $this->getCalendarById($id);
-	}
-
-	/**
 	 * @return null|SanitizedCalendar `null` if not found
 	 */
-	public function safeGetAbsenceCalendar(): ?array {
-		$id = $this->configService->getAbsenceCalendarId();
-		return $this->safeGetCalendarById($id);
+	public function getAbsenceCalendar(): ?array {
+		return $this->getCalendarById($this->configService->getAbsenceCalendarId());
 	}
 
 	/**
-	 * @return SanitizedCalendar
+	 * Returns the personal calendar of the specified user
 	 *
-	 * @throws CalendarNotFoundException
+	 * @param string $userId The user to get the personal calendar for
+	 *
+	 * @return null|SanitizedCalendar `null` if not found
 	 */
-	public function getPersonalCalendar(string $userId): array {
+	public function getPersonalCalendar(string $userId): ?array {
 		/** @var string */
 		$uri = CalDavBackend::PERSONAL_CALENDAR_URI;
 		return $this->getCalendarByUri($userId, $uri);
 	}
 
 	/**
-	 * @return SanitizedCalendar
+	 * Returns the calendar identified by `$id`
 	 *
-	 * @throws CalendarNotFoundException if no calendar for `$id` exists
-	 */
-	public function getCalendarById(int $id): array {
-		/** @var null|Calendar */
-		$calendar = $this->calDavBackend->getCalendarById($id);
-		if (!$calendar) {
-			throw new CalendarNotFoundException("Calendar with ID $id not found");
-		}
-		return self::sanitizeCalendar($calendar);
-	}
-
-	/**
+	 * @param int $id The ID of the calendar
+	 *
 	 * @return null|SanitizedCalendar `null` if no calendar for `$id` exists
 	 */
-	public function safeGetCalendarById(int $id): ?array {
-		try {
-			return $this->getCalendarById($id);
-		} catch (CalendarNotFoundException) {
-			return null;
-		}
+	public function getCalendarById(int $id): ?array {
+		/** @var null|Calendar */
+		$calendar = $this->calDavBackend->getCalendarById($id);
+		return $calendar === null ? null : self::sanitizeCalendar($calendar);
 	}
 
 	/**
-	 * @return SanitizedCalendar
+	 * Returns the calendar identified by `$userId` and `$calendarUri`
 	 *
-	 * @throws CalendarNotFoundException if no calendar for `$userId` and
-	 *                                   `$calendarUri` exists
+	 * @param string $userId The principals user ID
+	 * @param string $calendarUri The calendar URI
+	 *
+	 * @return null|SanitizedCalendar `null` if no calendar for `$userId` and
+	 *                                `$calendarUri` exists
 	 */
-	public function getCalendarByUri(string $userId, string $calendarUri): array {
+	public function getCalendarByUri(
+		string $userId,
+		string $calendarUri,
+	): ?array {
 		$principalUri = "principals/users/$userId";
 		/** @var null|Calendar */
 		$calendar = $this->calDavBackend->getCalendarByUri(
 			$principalUri,
 			$calendarUri,
 		);
-		if (!$calendar) {
-			throw new CalendarNotFoundException(
-				"Couldn't find calendar by principal URI $principalUri"
-				. " and calendar URI $calendarUri"
-			);
-		}
-		return self::sanitizeCalendar($calendar);
+		return $calendar === null ? null : self::sanitizeCalendar($calendar);
 	}
 
 	/**
 	 * Checks if there is an event in the absence calendar for `$userId`
 	 * between `$start` and `$end`
+	 *
+	 * @param string $userId The user to execute the absence check for
+	 * @param DateTimeImmutable $start The start of the checked period
+	 * @param DateTimeImmutable $end The end of the checked period
+	 *
+	 * @return bool
 	 */
 	public function isUserAbsent(
 		string $userId,
@@ -383,7 +343,13 @@ final class CalendarService {
 	}
 
 	/**
-	 * @param null|list<string> $userIds
+	 * Returns all absence calendar events blocking the users in `$userIds`
+	 * between `$start` and `$end`
+	 *
+	 * @param DateTimeImmutable $start The start of the checked period
+	 * @param DateTimeImmutable $end The end of the checked period
+	 * @param null|list<string> $userIds The users to return blockers for. If
+	 *                                   `null`, all users are considered.
 	 *
 	 * @return list<array{
 	 *     user_id: string,
@@ -392,6 +358,9 @@ final class CalendarService {
 	 *     all_day: bool,
 	 *     title: string,
 	 * }>
+	 *
+	 * @psalm-suppress MixedAssignment, MixedMethodCall The Sabre VObject
+	 *                 classes are not visible to Psalm
 	 */
 	public function getAbsenceBlockers(
 		DateTimeImmutable $start,
@@ -399,6 +368,9 @@ final class CalendarService {
 		?array $userIds = null,
 	): array {
 		$calendar = $this->getAbsenceCalendar();
+		if ($calendar === null) {
+			return [];
+		}
 
 		/** @var list<SearchResult> */
 		$results = $this->calDavBackend->search(
@@ -419,7 +391,7 @@ final class CalendarService {
 			$userIdMap[self::normalizeIdentity($userId)] = $userId;
 			$displayNameMap[self::normalizeIdentity($user->getDisplayName())] = $userId;
 			$email = $user->getEMailAddress();
-			if ($email) {
+			if ($email !== null && $email !== '') {
 				$emailMap[self::normalizeIdentity($email)] = $userId;
 			}
 		}
@@ -427,6 +399,7 @@ final class CalendarService {
 		$blockers = [];
 		foreach ($results as $result) {
 			$summary = $result['objects'][0]['SUMMARY'][0] ?? '';
+			/** @var null|CalendarObject */
 			$calendarObject = $this->calDavBackend->getCalendarObject(
 				$calendar['id'],
 				$result['uri'],
@@ -444,10 +417,12 @@ final class CalendarService {
 				if (!$vEvent instanceof VEvent) {
 					continue;
 				}
+				/** @var null|DateTimeInterface */
 				$eventStart = $vEvent->DTSTART?->getDateTime();
 				if ($eventStart === null) {
 					continue;
 				}
+				/** @var DateTimeInterface */
 				$eventEnd = $vEvent->DTEND?->getDateTime() ?? $eventStart;
 				if ($eventEnd < $start || $eventStart > $end) {
 					continue;
@@ -475,11 +450,21 @@ final class CalendarService {
 	}
 
 	/**
-	 * @param array<string,string> $userIdMap
-	 * @param array<string,string> $emailMap
-	 * @param array<string,string> $displayNameMap
+	 * Resolves the users participating in `$vEvent`
+	 *
+	 * Participants are matched against the user ID, the email address and the
+	 * display name, both via the event's attendees and its summary
+	 *
+	 * @param VEvent $vEvent The event to resolve the participants for
+	 * @param string $summary The event's summary
+	 * @param array<string,string> $userIdMap Normalized user ID to user ID
+	 * @param array<string,string> $emailMap Normalized email to user ID
+	 * @param array<string,string> $displayNameMap Normalized display name to user ID
 	 *
 	 * @return list<string>
+	 *
+	 * @psalm-suppress MixedAssignment, MixedMethodCall The Sabre VObject
+	 *                 classes are not visible to Psalm
 	 */
 	private function resolveEventParticipants(
 		VEvent $vEvent,
@@ -509,9 +494,6 @@ final class CalendarService {
 
 		$resolvedUserIds = [];
 		foreach ($tokens as $token) {
-			if (!is_string($token)) {
-				continue;
-			}
 			foreach (self::toIdentityCandidates($token) as $candidate) {
 				$userId
 					= $userIdMap[$candidate]
@@ -558,6 +540,18 @@ final class CalendarService {
 		return mb_strtolower(trim($value));
 	}
 
+	/**
+	 * Checks if `$vEvent` spans one or more full days
+	 *
+	 * @param VEvent $vEvent The event to check
+	 * @param DateTimeInterface $start The event's start
+	 * @param DateTimeInterface $end The event's end
+	 *
+	 * @return bool
+	 *
+	 * @psalm-suppress MixedArrayAccess, MixedAssignment, MixedMethodCall The
+	 *                 Sabre VObject classes are not visible to Psalm
+	 */
 	private static function isAllDayEvent(
 		VEvent $vEvent,
 		DateTimeInterface $start,
@@ -579,9 +573,12 @@ final class CalendarService {
 	}
 
 	/**
-	 * This method returns the same values if the `$shiftId` does not change
+	 * Returns an array containing two calendar object URIs: one for the
+	 * not-deleted variant and the other one for the deleted variant
 	 *
-	 * @param int $shiftId
+	 * The return value is stable for identical `$shiftId` input values
+	 *
+	 * @param int $shiftId The shift to get the calendar object URIs for
 	 *
 	 * @return array{normal:string,deleted:string}
 	 */
@@ -591,12 +588,15 @@ final class CalendarService {
 	}
 
 	/**
-	 * @param Calendar $calendar
+	 * Sanitizes a calendar (associative array) returned from many of the
+	 * {@see OCA\DAV\CalDAV\CalDavBackend} methods
+	 *
+	 * @param Calendar $calendar The calendar to sanitize
 	 *
 	 * @return SanitizedCalendar
 	 */
-	public static function sanitizeCalendar(array $calendar) {
-		return [
+	public static function sanitizeCalendar(array $calendar): array {
+		$sanitizedCalendar = [
 			'id' => $calendar['id'],
 			'uri' => $calendar['uri'],
 			'principalUri' => $calendar['principaluri'],
@@ -604,5 +604,12 @@ final class CalendarService {
 			'ownerDisplayName'
 				=> $calendar['{http://nextcloud.com/ns}owner-displayname'],
 		];
+		if (array_key_exists('{http://owncloud.org/ns}owner-principal', $calendar)) {
+			$sanitizedCalendar['ownerPrincipal'] = $calendar['{http://owncloud.org/ns}owner-principal'];
+		}
+		if (array_key_exists('{http://owncloud.org/ns}read-only', $calendar)) {
+			$sanitizedCalendar['readOnly'] = $calendar['{http://owncloud.org/ns}read-only'];
+		}
+		return $sanitizedCalendar;
 	}
 }

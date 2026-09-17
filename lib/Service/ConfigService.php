@@ -12,7 +12,6 @@ use OCA\ShiftsNext\Enum\ExchangeApprovalType;
 use OCA\ShiftsNext\Enum\UserConfigKey;
 use OCP\IAppConfig;
 use OCP\IConfig;
-
 use function is_string;
 use function json_decode;
 use function json_encode;
@@ -70,6 +69,14 @@ final class ConfigService extends AbstractService {
 		);
 	}
 
+	public function deleteCommonCalendarId(): static {
+		$this->appConfig->deleteKey(
+			Application::APP_ID,
+			AppConfigKey::CommonCalendarId->value,
+		);
+		return $this;
+	}
+
 	/**
 	 * @psalm-suppress PossiblyUnusedMethod Called dynamically by
 	 * {@see OCA\ShiftsNext\Service\ConfigService::setConfigValue()}
@@ -88,6 +95,14 @@ final class ConfigService extends AbstractService {
 			Application::APP_ID,
 			AppConfigKey::AbsenceCalendarId->value,
 		);
+	}
+
+	public function deleteAbsenceCalendarId(): static {
+		$this->appConfig->deleteKey(
+			Application::APP_ID,
+			AppConfigKey::AbsenceCalendarId->value,
+		);
+		return $this;
 	}
 
 	/**

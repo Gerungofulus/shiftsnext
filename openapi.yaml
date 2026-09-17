@@ -663,66 +663,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/ReadOnlyUser'
-  /calendars/synchronize-by-groups:
-    post:
-      tags:
-        - calendar
-      summary: Synchronize shifts identified by `group_ids` with calendars
-      description: When calling this endpoint, the backend only applies
-        previously created pending calendar changes. Those changes are created
-        automatically on certain actions, namely creating, updating or deleting
-        a shift (which includes updating a shift due to a shift exchange).
-      requestBody:
-        $ref: '#/components/requestBodies/SynchronizeCalendarByGroups'
-      responses:
-        '200':
-          description: It's possible that errors occur during synchronization.
-            The response contains an array with all the errors that occured.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: string
-                  example: Lorem ipsum dolor sit amet
-        '400':
-          description: Body parsing error. Might also occur if some
-            configuration is missing, in which case the body contains more
-            details.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-  /calendars/synchronize-by-shifts:
-    post:
-      tags:
-        - calendar
-      summary: Synchronize shifts identified by `shift_ids` with calendars
-      description: When calling this endpoint, the backend only applies
-        previously created pending calendar changes. Those changes are created
-        automatically on certain actions, namely creating, updating or deleting
-        a shift (which includes updating a shift due to a shift exchange).
-      requestBody:
-        $ref: '#/components/requestBodies/SynchronizeCalendarByShifts'
-      responses:
-        '200':
-          description: It's possible that errors occur during synchronization.
-            The response contains an array with all the errors that occured.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: string
-                  example: Lorem ipsum dolor sit amet
-        '400':
-          description: Body parsing error. Might also occur if some
-            configuration is missing, in which case the body contains more
-            details.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
   /calendars/absence-blockers:
     get:
       tags:
@@ -749,6 +689,12 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/AbsenceBlocker'
+        '422':
+          description: The `week_date` filter is not a valid ISO week date
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /config/app:
     put:
       tags:
@@ -1230,32 +1176,6 @@ components:
       allOf:
         - $ref: '#/components/schemas/User'
         - readOnly: true
-    SynchronizeCalendarByGroupsPost:
-      required:
-        - group_ids
-      type: object
-      properties:
-        group_ids:
-          description: Limits the synchronization to those shifts whose shift
-            type has one of the specified group IDs. All groups, for which the
-            caller has no shift admin privileges, are omitted.
-          type: array
-          writeOnly: true
-          items:
-            $ref: '#/components/schemas/WriteOnlyGroupId'
-    SynchronizeCalendarByShiftsPost:
-      required:
-        - shift_ids
-      type: object
-      properties:
-        shift_ids:
-          description: Limits the synchronization to shifts identified by
-            the specified shift IDs. The caller does not need shift admin
-            privileges to synchronize those shifts.
-          type: array
-          writeOnly: true
-          items:
-            $ref: '#/components/schemas/WriteOnlyId'
     AppConfigEnvelope:
       required:
         - values
@@ -1386,16 +1306,6 @@ components:
           schema:
             $ref: '#/components/schemas/GroupShiftAdminRelationGroupedByGroup'
       required: true
-    SynchronizeCalendarByGroups:
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/SynchronizeCalendarByGroupsPost'
-    SynchronizeCalendarByShifts:
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/SynchronizeCalendarByShiftsPost'
     AppConfig:
       content:
         application/json:

@@ -14,16 +14,6 @@
 						<Cancel :size="24" />
 					</template>
 				</NcButton>
-				<NcButton
-					v-if="isShiftAdmin"
-					:disabled="synchronizing"
-					:aria-label="t(APP_ID, 'Synchronize with calendar app')"
-					variant="secondary"
-					@click="synchronizeByGroups()">
-					<template #icon>
-						<CalendarSync :size="24" />
-					</template>
-				</NcButton>
 			</div>
 		</template>
 	</ContentHeader>
@@ -276,23 +266,46 @@ export const [injectShiftsContext, provideShiftsContext]
 </script>
 
 <script setup lang="ts">
-import type { AbsenceBlocker } from '../models/calendarSync.ts'
+import type { Ref } from 'vue'
+import type { AbsenceBlocker } from '../models/calendar.ts'
 import type { Shift, ShiftPostPayload } from '../models/shift.ts'
+import type {
+	HeaderRow,
+	MultiStepAction,
+	ShiftCellStateConfig,
+	ShiftsDataCell,
+	ShiftsRow,
+	ShiftTypesDataCell,
+	ShiftTypesRow,
+	ShiftTypeWrapper,
+	StringCell,
+	UndefinedMultiStepAction,
+	UserCell,
+	WeekCell,
+	ZonedDateTimeDataCell,
+} from '../models/shiftsTable.ts'
+import type {
+	ShiftType,
+	ShortDay,
+	ShortDayToAmountMap,
+} from '../models/shiftType.ts'
 import type { User } from '../models/user.ts'
+import type {
+	IsoCalendarDate,
+	IsoWeekDate,
+	IsoWeekDateWithDay,
+	IsoWeekDateWithoutDay,
+} from '../utils/date.ts'
 
 import { t } from '@nextcloud/l10n'
 import { onKeyStroke, useWindowSize, watchImmediate } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { Temporal } from 'temporal-polyfill'
 import {
-	type Ref,
-
 	computed,
 	ref,
 } from 'vue'
 import NcButton from '@nextcloud/vue/components/NcButton'
-// @ts-expect-error package has no types
-import CalendarSync from 'vue-material-design-icons/CalendarSync.vue'
 // @ts-expect-error package has no types
 import Cancel from 'vue-material-design-icons/Cancel.vue'
 // @ts-expect-error package has no types
@@ -303,35 +316,12 @@ import ContentHeader from '../components/ContentHeader.vue'
 import PaddedContainer from '../components/PaddedContainer.vue'
 import ShiftPill from '../components/ShiftPill.vue'
 import ShiftTypePill from '../components/ShiftTypePill.vue'
-import {
-	getAbsenceBlockers,
-	postSynchronizeByGroups,
-	postSynchronizeByShifts,
-} from '../db/calendarSync.ts'
+import { getAbsenceBlockers } from '../db/calendar.ts'
 import { deleteShift, getShifts, patchShift, postShift } from '../db/shift.ts'
 import { getShiftTypes } from '../db/shiftType.ts'
 import { getUsers } from '../db/user.ts'
 import { ShiftsRowNotFoundError, ShiftTypeWrapperNotFoundError } from '../models/error.ts'
 import {
-	type HeaderRow,
-	type MultiStepAction,
-	type ShiftCellStateConfig,
-	type ShiftsDataCell,
-	type ShiftsRow,
-	type ShiftTypesDataCell,
-	type ShiftTypesRow,
-	type ShiftTypeWrapper,
-	type StringCell,
-	type UndefinedMultiStepAction,
-	type UserCell,
-	type WeekCell,
-	type ZonedDateTimeDataCell,
-} from '../models/shiftsTable.ts'
-import {
-	type ShiftType,
-	type ShortDay,
-	type ShortDayToAmountMap,
-
 	SHORT_DAYS,
 	shortDayToIsoDayNumberMap,
 } from '../models/shiftType.ts'
@@ -339,11 +329,6 @@ import { useUserSettingsStore } from '../stores/userSettings.ts'
 import { APP_ID } from '../utils/appId.ts'
 import { rotate } from '../utils/array.ts'
 import {
-	type IsoCalendarDate,
-	type IsoWeekDate,
-	type IsoWeekDateWithDay,
-	type IsoWeekDateWithoutDay,
-
 	formatDate,
 	formatRange,
 	getIsoCalendarDate,
@@ -353,11 +338,7 @@ import {
 	userTimeZone,
 } from '../utils/date.ts'
 import { isMember } from '../utils/groupUserRelation.ts'
-import {
-	getInitialGroups,
-	getInitialIsShiftAdmin,
-	getInitialShowAbsenceBlockers,
-} from '../utils/initialState.ts'
+import { getInitialShowAbsenceBlockers } from '../utils/initialState.ts'
 import { logger } from '../utils/logger.ts'
 import { compareShifts, compareShiftTypes } from '../utils/sort.ts'
 
@@ -388,13 +369,9 @@ const { width } = useWindowSize()
 updateNow()
 
 const loading = ref(true)
-const synchronizing = ref(false)
 
-const groups = ref(getInitialGroups())
 const showAbsenceBlockers = getInitialShowAbsenceBlockers()
 const absenceBlockersByUserAndDate = ref<Record<string, Record<string, AbsenceBlocker[]>>>({})
-
-const isShiftAdmin = getInitialIsShiftAdmin()
 
 const columnIndexOfWeek = computed(() => showWeeklyShifts.value ? 1 : -1)
 let columnIndexOfToday = -1
@@ -1044,7 +1021,6 @@ async function onShiftCellClick(userId: string): Promise<void> {
 		if (!affectedShift) {
 			return
 		}
-		postSynchronizeByShifts({ shift_ids: [affectedShift.id] })
 	} finally {
 		createOrUpdateRequestPending.value = false
 	}
@@ -1223,22 +1199,6 @@ function setMultiStepAction(newAction: MultiStepAction): void {
  */
 function resetMultiStepAction(): void {
 	multiStepAction.value = getUndefinedMultiStepAction()
-}
-
-/**
- * Syncs the calendar by groups
- */
-async function synchronizeByGroups() {
-	let groupIds = selectedGroupIds.value
-	if (groupIds.length === 0) {
-		groupIds = groups.value.map(({ id }) => id)
-	}
-	try {
-		synchronizing.value = true
-		await postSynchronizeByGroups({ group_ids: groupIds })
-	} finally {
-		synchronizing.value = false
-	}
 }
 
 /**

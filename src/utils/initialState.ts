@@ -153,3 +153,11 @@ export function getInitialShowAbsenceBlockers(): boolean {
 		false,
 	))
 }
+
+/**
+ * Returns all calendar for which the logged-in user had write permissions
+ * when the browser page was initially loaded
+ */
+export function getInitialWritableCalendars(): Calendar[] {
+	return structuredClone(loadState<Calendar[]>(APP_ID, 'writable_calendars'))
+}

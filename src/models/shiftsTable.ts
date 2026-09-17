@@ -1,6 +1,6 @@
 import type { Temporal } from 'temporal-polyfill'
 import type { IsoWeekDateWithoutDay } from '../utils/date.ts'
-import type { AbsenceBlocker } from './calendarSync.ts'
+import type { AbsenceBlocker } from './calendar.ts'
 import type { Shift } from './shift.ts'
 import type { RepetitionWeeklyType, ShiftType } from './shiftType.ts'
 import type { User } from './user.ts'

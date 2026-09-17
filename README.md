@@ -47,6 +47,25 @@ There are certain functionalities of the app which are not available to all user
 
 For these functionalities you need to define shift admins per Nextcloud group. We deliberately decided against using regular Nextcloud group admins to restrict these functionalities as it might be undesirable to give users regular Nextcloud group admin privileges merely because this app requires it.
 
+#### How to assign shift admins
+
+1. Open the _Add group_ selection and select the Nextcloud group you want to manage shift admins for
+2. Click the _Edit_ button in the table row for the group you just selected
+3. In the appearing selection, choose the shift admins for that group
+4. Click _Save_
+
+The users assigned as shift admins will then be able to create shift types for the group they are managing.
+
+##### Example
+
+Select the group "Workers A" from the _Add group_ selection, then add the user "Manager A" as shift admin and save.
+
+| Group     | Admins    |
+| --------- | --------- |
+| Workers A | Manager A |
+
+The user "Manager A" is now able to create shift types for the group "Workers A" and assign shifts of these types to members of that group.
+
 ## Usage
 
 ### Types
@@ -75,7 +94,17 @@ Shift types need to be marked as active in order to create shifts from them.
 
 Add a description to include more information what this type is about.
 
-#### Calendar event fields
+#### Calendar settings
+
+##### Synchronization
+
+Decide if you want shifts created from this type to be synchronized to the calendar app.
+
+##### Select calendar
+
+By default, shifts are synchronized to the _common_ calendar set in the _Administration settings_ by the Nextcloud admin. If you want to synchronize shifts created from this type to another calendar, choose the desired calendar from the list. Besides the "Global setting" (_common_ calendar), the list only includes calendars for which the logged-in user has write access. This has the following implications. If user "A" creates a shift type with its calendar set to calendar "X", for which user "A" has write access, and user "B" without write access to calendar "X" edits this shift type, user "B" will still see calendar "X" in the list, but once user "B" has switched and saved the shift type with a different calendar, user "B" won't be able to switch back to calendar "X" and save the shift type.
+
+##### Calendar event fields
 
 The values of these fields will be inserted into the corresponding calendar event fields when synchronizing shifts to the calendar app.
 
@@ -144,7 +173,7 @@ When all required parties have approved the exchange or at least one of them rej
 
 ### Calendar sync
 
-Whenever a shift is assigned, moved, deleted, transferred or exchanged, it will get synced to the _common_ calendar and — depending on the [administration settings](#calendar) — the _personal_ calendar automatically.
+Whenever a shift is assigned, moved, deleted, transferred or exchanged, it will get synced to the _common_ or – depending on the [shift type configuration](#select-calendar) – shift type specific calendar and – depending on the [administration settings](#calendar) – the _personal_ calendar automatically.
 
 ## Additional information
 

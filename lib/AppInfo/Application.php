@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace OCA\ShiftsNext\AppInfo;
 
+use OCA\DAV\Events\CalendarDeletedEvent;
+use OCA\ShiftsNext\Listener\CalendarDeletedListener;
 use OCA\ShiftsNext\Listener\GroupDeletedListener;
 use OCA\ShiftsNext\Listener\UserChangedListener;
 use OCA\ShiftsNext\Listener\UserDeletedListener;
@@ -25,7 +27,6 @@ final class Application extends App implements IBootstrap {
 		parent::__construct(self::APP_ID, $urlParams);
 
 		/**
-		 * @psalm-suppress DeprecatedInterface
 		 * @var IEventDispatcher
 		 */
 		$dispatcher = $this->getContainer()->get(IEventDispatcher::class);
@@ -33,6 +34,7 @@ final class Application extends App implements IBootstrap {
 		$dispatcher->addServiceListener(GroupDeletedEvent::class, GroupDeletedListener::class);
 		$dispatcher->addServiceListener(UserChangedEvent::class, UserChangedListener::class);
 		$dispatcher->addServiceListener(UserDeletedEvent::class, UserDeletedListener::class);
+		$dispatcher->addServiceListener(CalendarDeletedEvent::class, CalendarDeletedListener::class);
 	}
 
 	#[Override]
